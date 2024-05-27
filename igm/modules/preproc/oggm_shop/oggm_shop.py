@@ -139,14 +139,21 @@ def initialize(params, state):
     uvelsurfobs = scipy.signal.medfilt2d(uvelsurfobs, kernel_size=3) # remove outliers
     vvelsurfobs = scipy.signal.medfilt2d(vvelsurfobs, kernel_size=3) # remove outliers
 
-    if "millan_ice_thickness" in nc.variables:
+    if "millan_ice_thickness" in nc.variables and params.oggm_thk_source=="millan_ice_thickness":
         thkinit = np.flipud(
             np.squeeze(nc.variables["millan_ice_thickness"]).astype("float32")
         )
         thkinit = np.where(np.isnan(thkinit), 0, thkinit)
         thkinit = np.where(icemaskobs, thkinit, 0)
         vars_to_save += ["thkinit"]
-        
+    elif "consensus_ice_thickness" in nc.variables and params.oggm_thk_source=="consensus_ice_thickness":
+        thkinit = np.flipud(
+            np.squeeze(nc.variables["consensus_ice_thickness"]).astype("float32")
+        )
+        thkinit = np.where(np.isnan(thkinit), 0, thkinit)
+        thkinit = np.where(icemaskobs, thkinit, 0)
+        vars_to_save += ["thkinit"]
+
     if "hugonnet_dhdt" in nc.variables:
         dhdt = np.flipud(
             np.squeeze(nc.variables["hugonnet_dhdt"]).astype("float32")
@@ -170,6 +177,7 @@ def initialize(params, state):
                 thkobs = np.where(icemaskobs, thkobs, np.nan)
             except:
                 thkobs = np.zeros_like(thk) * np.nan
+
         elif params.oggm_RGI_version==7:
             path_glathida = os.path.join(params.oggm_RGI_ID, "glathida_data.csv")
     
@@ -180,6 +188,7 @@ def initialize(params, state):
                 thkobs = np.where(icemaskobs, thkobs, np.nan)
             except:
                 thkobs = np.zeros_like(thk) * np.nan
+
 
     nc.close()
 
@@ -434,7 +443,7 @@ def _read_glathida(x, y, usurf, proj, path_glathida, state):
 
     lonmin, latmin = transformer.transform(min(x), min(y))
     lonmax, latmax = transformer.transform(max(x), max(y))
-
+    
     transformer = Transformer.from_crs("epsg:4326", proj, always_xy=True)
 
     #    print(x.shape, y.shape, usurf.shape)
@@ -444,7 +453,7 @@ def _read_glathida(x, y, usurf, proj, path_glathida, state):
     df = pd.concat(
         [pd.read_csv(file, low_memory=False) for file in files], ignore_index=True
     )
-    
+    # df contains ALL of glathida
     
     mask = (
         (lonmin <= df["longitude"])
@@ -457,7 +466,8 @@ def _read_glathida(x, y, usurf, proj, path_glathida, state):
     )
     df = df[mask]
 
-    # Filter by date gap in second step for speed
+    # Filter by date gap in second step for speed - observations should be no more than a year away from elevation date
+    # But we still may have observations taken several years apart!
     mask = (
         (
             df["date"].str.slice(0, 4).astype(int)
@@ -473,10 +483,11 @@ def _read_glathida(x, y, usurf, proj, path_glathida, state):
         thkobs = np.ones_like(usurf)
         thkobs[:] = np.nan
 
-    else:
+    else: # rasterize the thickness observations
         if hasattr(state, "logger"):
             state.logger.info("Nb of profiles found : " + str(df.index.shape[0]))
 
+        #xx, yy = transformer.transform(df["lon"], df["lat"])
         xx, yy = transformer.transform(df["longitude"], df["latitude"])
         bedrock = df["elevation"] - df["thickness"]
         elevation_normalized = fsurf(xx, yy, grid=False)
@@ -492,7 +503,7 @@ def _read_glathida(x, y, usurf, proj, path_glathida, state):
                 }
             )
             .groupby(["row", "col"])["thickness"]
-            .mean()
+            .mean() # mean over each grid cell
         )
         thkobs = np.full((y.shape[0], x.shape[0]), np.nan)
         thickness_gridded[thickness_gridded == 0] = np.nan
