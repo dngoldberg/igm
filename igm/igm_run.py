@@ -44,7 +44,8 @@ def main() -> None:
     os.environ["CUDA_VISIBLE_DEVICES"] = str(params.gpu_id)        
 
     # Place the computation on your device GPU ('/GPU:0') or CPU ('/CPU:0')
-    with tf.device(f"/GPU:{params.gpu_id}"):  # type: ignore for linting checks
+    #with tf.device(f"/GPU:{params.gpu_id}"):  # type: ignore for linting checks
+    with tf.device(f"/GPU:0"):  # type: ignore for linting checks
         run_intializers(imported_modules, params, state)
         run_processes(imported_modules, params, state)
         run_finalizers(imported_modules, params, state)

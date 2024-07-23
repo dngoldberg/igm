@@ -9,6 +9,7 @@ import datetime, time
 import tensorflow as tf
 from netCDF4 import Dataset
 from scipy.interpolate import RectBivariateSpline
+from IPython import embed
 
 from igm.modules.utils import *
 
@@ -62,6 +63,12 @@ def params(parser):
         help="Y top coordinate for cropping the NetCDF data",
         default=10**20,
     )
+    parser.add_argument(
+        "--lncd_set_thk_from_usurf",
+        type=str2bool,
+        default="False",
+        help="if topg and usurf are available, thk is set based on density ratio",
+    )
 
 
 def initialize(params, state):
@@ -93,7 +100,12 @@ def initialize(params, state):
                 vars()[var] = np.squeeze(nc.variables[var]).astype("float32")
             vars()[var] = np.where(vars()[var] > 10**35, np.nan, vars()[var])
 
-
+    listvars=vars().keys()
+    if ('topg' in listvars and 'usurf' in listvars):
+        if params.lncd_set_thk_from_usurf:
+            lsurf = -1. * vars()["usurf"] * params.thk_ratio_density / (1-params.thk_ratio_density)
+            lsurf = np.maximum(vars()["topg"],lsurf)
+            vars()["thk"] = vars()["usurf"] - lsurf
 
     # coarsen if requested
     if params.lncd_coarsen > 1:
@@ -139,9 +151,11 @@ def initialize(params, state):
             if var in ["x", "y"]:
                 vars(state)[var] = tf.constant(vars()[var].astype("float32"))
             else:
-                vars(state)[var] = tf.Variable(vars()[var].astype("float32"), trainable=False)
-
+                if not (params.lncd_set_thk_from_usurf and var in ["thk"]):
+                    vars(state)[var] = tf.Variable(vars()[var].astype("float32"), trainable=False)
     nc.close()
+    if params.lncd_set_thk_from_usurf:
+        vars(state)["thk"] = tf.Variable(vars()["thk"].astype("float32"), trainable=False)
 
     complete_data(state)
 

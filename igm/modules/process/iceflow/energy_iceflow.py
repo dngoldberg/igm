@@ -1,5 +1,6 @@
 import numpy as np 
 import tensorflow as tf 
+from IPython import embed
 from igm.modules.utils import *
 
 
@@ -75,7 +76,7 @@ def _compute_strainrate_Glen_tf(U, V, thk, slidingco, dX, ddz, sloptopgx, slopto
 
 
 def _stag2(B):
-    return (B[:, 1:] + B[:, :1]) / 2
+    return (B[:, 1:] + B[:, :-1]) / 2
 
 
 def _stag4(B):
@@ -102,7 +103,7 @@ def _stag8(B):
 
 
 def iceflow_energy(params, U, V, fieldin):
-    thk, usurf, arrhenius, slidingco, dX = fieldin
+    thk, usurf, arrhenius, slidingco, topg, dX = fieldin
 
     return _iceflow_energy(
         U,
@@ -111,6 +112,7 @@ def iceflow_energy(params, U, V, fieldin):
         usurf,
         arrhenius,
         slidingco,
+        topg,
         dX,
         params.iflo_Nz,
         params.iflo_vert_spacing,
@@ -127,7 +129,8 @@ def iceflow_energy(params, U, V, fieldin):
         params.iflo_regu,
         params.iflo_min_sr,
         params.iflo_max_sr,
-        params.iflo_force_negative_gravitational_energy
+        params.iflo_force_negative_gravitational_energy,
+        params.thk_ratio_density
     )
 
 
@@ -139,6 +142,7 @@ def _iceflow_energy(
     usurf,
     arrhenius,
     slidingco,
+    topg,
     dX,
     Nz,
     vert_spacing,
@@ -155,7 +159,8 @@ def _iceflow_energy(
     iflo_regu,
     min_sr,
     max_sr,
-    iflo_force_negative_gravitational_energy
+    iflo_force_negative_gravitational_energy,
+    thk_ratio_density
 ):
     # warning, the energy is here normalized dividing by int_Omega
 
@@ -190,6 +195,8 @@ def _iceflow_energy(
         else:
             C = (slidingco + 10 ** (-12)) ** -(1.0 / exp_weertman)
 
+    lsurf = usurf - thk
+    C = tf.where((lsurf<topg+1.0)&(thk>0),C,0.0)
     p = 1.0 + 1.0 / exp_glen
     s = 1.0 + 1.0 / exp_weertman
 
@@ -230,7 +237,6 @@ def _iceflow_energy(
 
         C_shear = C_shear + iflo_regu*C_shear_2
         
-    lsurf = usurf - thk
 
     sloptopgx, sloptopgy = _compute_gradient_stag(lsurf, dX, dX)
 
@@ -269,10 +275,10 @@ def _iceflow_energy(
 
         ################################################################
         
-        lsurf = usurf - thk
         
     #   Check formula (17) in [Jouvet and Graeser 2012], Unit is Mpa 
-        P =tf.where(lsurf<0, 0.5 * 10 ** (-6) * 9.81 * 910 * ( thk**2 - (1000/910)*lsurf**2 ) , 0.0)  / dX[:, 0, 0] 
+    #    P =tf.where(lsurf<0, 0.5 * 10 ** (-6) * 9.81 * 910 * ( thk**2 - lsurf**2 / params.thk_ratio_density) , 0.0)  / dX[:, 0, 0] 
+        P =0.5 * 10 ** (-6) * 9.81 * ice_density * ( thk**2 - lsurf**2 / thk_ratio_density) / dX[:, 0, 0] 
         
         if len(iflo_cf_eswn) == 0:
             thkext = tf.pad(thk,[[0,0],[1,1],[1,1]],"CONSTANT",constant_values=1)
@@ -308,6 +314,8 @@ def _iceflow_energy(
             # SSA
             C_float = ( P * U * CF_W - P * U * CF_E  + P * V * CF_S - P * V * CF_N )  
 
+
+
         ###########################################################
 
         # ddz = tf.stack([thk * z for z in temd], axis=1) 
@@ -342,6 +350,7 @@ def _iceflow_energy(
         C_float = tf.zeros_like(C_shear)
 
     # print(C_shear[0].numpy(),C_slid[0].numpy(),C_grav[0].numpy(),C_float[0].numpy())
+
 
     return C_shear, C_slid, C_grav, C_float
 
@@ -381,7 +390,11 @@ def UV_to_Y(params, U, V):
 def fieldin_to_X(params, fieldin):
     X = []
 
-    fieldin_dim = [0, 0, 1 * (params.iflo_dim_arrhenius == 3), 0, 0]
+#    fieldin_dim = [0, 0, 1 * (params.iflo_dim_arrhenius == 3), 0, 0]
+    fieldin_dim = [0]*len(params.iflo_fieldin)
+    for j in range(len(params.iflo_fieldin)):
+        if params.iflo_fieldin[j]=="arrhenius":
+            fieldin_dim[j] = 1 * (params.iflo_dim_arrhenius == 3)
 
     for f, s in zip(fieldin, fieldin_dim):
         if s == 0:
@@ -395,7 +408,11 @@ def fieldin_to_X(params, fieldin):
 def X_to_fieldin(params, X):
     i = 0
 
-    fieldin_dim = [0, 0, 1 * (params.iflo_dim_arrhenius == 3), 0, 0]
+#    fieldin_dim = [0, 0, 1 * (params.iflo_dim_arrhenius == 3), 0, 0]
+    fieldin_dim = [0]*len(params.iflo_fieldin)
+    for j in range(len(params.iflo_fieldin)):
+        if params.iflo_fieldin[j]=="arrhenius":	    
+            fieldin_dim[j] = 1 * (params.iflo_dim_arrhenius == 3)
 
     fieldin = []
 

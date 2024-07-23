@@ -5,6 +5,7 @@
 
 import datetime, time
 import tensorflow as tf
+from IPython import embed
 
 from igm.modules.utils import compute_divflux_slope_limiter
 
