@@ -103,17 +103,24 @@ def _stag8(B):
 
 
 def iceflow_energy(params, U, V, fieldin):
-    thk, usurf, arrhenius, slidingco, topg, dX = fieldin
+    for j, var in enumerate(params.iflo_fieldin):
+        if not var in vars().keys():
+            vars()[var] = fieldin[j]
+        
+    pass_topg=False
+    if ("topg" not in vars().keys()): 
+        vars()['topg'] = tf.identity(vars()['dX'])
+        pass_topg=True
 
     return _iceflow_energy(
         U,
         V,
-        thk,
-        usurf,
-        arrhenius,
-        slidingco,
-        topg,
-        dX,
+        vars()['thk'],
+        vars()['usurf'],
+        vars()['arrhenius'],
+        vars()['slidingco'],
+        vars()['topg'],
+        vars()['dX'],
         params.iflo_Nz,
         params.iflo_vert_spacing,
         params.iflo_exp_glen,
@@ -130,7 +137,8 @@ def iceflow_energy(params, U, V, fieldin):
         params.iflo_min_sr,
         params.iflo_max_sr,
         params.iflo_force_negative_gravitational_energy,
-        params.thk_ratio_density
+        params.thk_ratio_density,
+        pass_topg
     )
 
 
@@ -160,7 +168,8 @@ def _iceflow_energy(
     min_sr,
     max_sr,
     iflo_force_negative_gravitational_energy,
-    thk_ratio_density
+    thk_ratio_density,
+    pass_topg
 ):
     # warning, the energy is here normalized dividing by int_Omega
 
@@ -196,7 +205,8 @@ def _iceflow_energy(
             C = (slidingco + 10 ** (-12)) ** -(1.0 / exp_weertman)
 
     lsurf = usurf - thk
-    C = tf.where((lsurf<topg+1.0)&(thk>0),C,0.0)
+    if (iflo_cf_cond and pass_topg):
+        C = tf.where((lsurf<topg+1.0)&(thk>0),C,0.0)
     p = 1.0 + 1.0 / exp_glen
     s = 1.0 + 1.0 / exp_weertman
 
