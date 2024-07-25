@@ -223,6 +223,7 @@ def update_iceflow_emulator(params, state):
 
 def _update_iceflow_emulator_lbfgs(params, state, X, nbit):
 
+    # note -- had to install 0.23.0 for compat with tf 2.15
     import tensorflow_probability as tfp
 
     # based on guidance here: https://gist.github.com/piyueh/712ec7d4540489aad2dcfb80f9a54993
