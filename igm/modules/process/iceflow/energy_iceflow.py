@@ -106,11 +106,11 @@ def iceflow_energy(params, U, V, fieldin):
     for j, var in enumerate(params.iflo_fieldin):
         if not var in vars().keys():
             vars()[var] = fieldin[j]
-        
-    pass_topg=False
+
+    pass_topg=True
     if ("topg" not in vars().keys()): 
-        vars()['topg'] = tf.identity(vars()['dX'])
-        pass_topg=True
+        vars()['topg'] = vars()['dX']
+        pass_topg=False
 
     return _iceflow_energy(
         U,
@@ -365,7 +365,7 @@ def _iceflow_energy(
     return C_shear, C_slid, C_grav, C_float
 
 
-# @tf.function(experimental_relax_shapes=True)
+#@tf.function(experimental_relax_shapes=True)
 def iceflow_energy_XY(params, X, Y):
     U, V = Y_to_UV(params, Y)
 

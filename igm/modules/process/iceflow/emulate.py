@@ -9,6 +9,7 @@ from .neural_network import *
 
 from igm import emulators
 import importlib_resources
+from IPython import embed
   
 def initialize_iceflow_emulator(params,state):
 
@@ -144,17 +145,7 @@ def update_iceflow_emulated(params, state):
 def update_iceflow_emulator(params, state):
     if (state.it < 0) | (state.it % params.iflo_retrain_emulator_freq == 0):
         fieldin = [vars(state)[f] for f in params.iflo_fieldin]
-
-########################
-
-        # thkext = tf.pad(state.thk,[[1,1],[1,1]],"CONSTANT",constant_values=1)
-        # # this permits to locate the calving front in a cell in the 4 directions
-        # state.CF_W = tf.where((state.thk>0)&(thkext[1:-1,:-2]==0),1.0,0.0)
-        # state.CF_E = tf.where((state.thk>0)&(thkext[1:-1,2:]==0),1.0,0.0) 
-        # state.CF_S = tf.where((state.thk>0)&(thkext[:-2,1:-1]==0),1.0,0.0)
-        # state.CF_N = tf.where((state.thk>0)&(thkext[2:,1:-1]==0),1.0,0.0)
-
-########################
+        thk = state.thk
 
         XX = fieldin_to_X(params, fieldin)
 
@@ -171,54 +162,58 @@ def update_iceflow_emulator(params, state):
             state.it < 0
         ) * params.iflo_retrain_emulator_nbit_init
 
-        iz = params.iflo_exclude_borders 
+        if (not params.iflo_optimizer_lbfgs):
 
-        for epoch in range(nbit):
-            cost_emulator = tf.Variable(0.0)
+            iz = params.iflo_exclude_borders 
 
-            for i in range(X.shape[0]):
-                with tf.GradientTape() as t:
+            for epoch in range(nbit):
+                cost_emulator = tf.Variable(0.0)
 
-                    Y = state.iceflow_model(tf.pad(X[i:i+1, :, :, :], PAD, "CONSTANT"))[:,:Ny,:Nx,:]
-                    
-                    if iz>0:
-                        C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, iz:-iz, iz:-iz, :], Y[:, iz:-iz, iz:-iz, :])
-                    else:
-                        C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, :, :, :], Y[:, :, :, :])
+                for i in range(X.shape[0]):
+                    with tf.GradientTape() as t:
  
-                    COST = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
-                         + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
+                        Y = state.iceflow_model(tf.pad(X[i:i+1, :, :, :], PAD, "CONSTANT"))[:,:Ny,:Nx,:]
                     
-                    if (epoch + 1) % 20 == 0:
-                        print("---------- > ", tf.reduce_mean(C_shear).numpy(), tf.reduce_mean(C_slid).numpy(), tf.reduce_mean(C_grav).numpy(), tf.reduce_mean(C_float).numpy())
+                        if iz>0:
+                            C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, iz:-iz, iz:-iz, :], Y[:, iz:-iz, iz:-iz, :])
+                        else:
+                            C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, :, :, :], Y[:, :, :, :])
+ 
+                        COST = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
+                             + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
+                   
 
-#                    state.C_shear = tf.pad(C_shear[0],[[0,1],[0,1]],"CONSTANT")
-#                    state.C_slid  = tf.pad(C_slid[0],[[0,1],[0,1]],"CONSTANT")
-#                    state.C_grav  = tf.pad(C_grav[0],[[0,1],[0,1]],"CONSTANT")
-#                    state.C_float = C_float[0] 
+                        if (epoch + 1) % 100 == 0:
+                            Csh = tf.reduce_mean(C_shear).numpy()
+                            Cgr = tf.reduce_mean(C_grav).numpy()
+                            Csl = tf.reduce_mean(C_slid).numpy()
+                            Cfl = tf.reduce_mean(C_float).numpy()
+                            print("---------- > ",Csh,Csl,Cgr,Cfl)
 
-                    # print(state.C_shear.shape, state.C_slid.shape, state.C_grav.shape, state.C_float.shape,state.thk.shape )
+                        cost_emulator = cost_emulator + COST
 
-                    cost_emulator = cost_emulator + COST
+                        if (epoch + 1) % 100 == 0:
+                            U, V = Y_to_UV(params, Y)
+                            U = U[0]
+                            V = V[0]
+                            velsurf_mag = tf.sqrt(U[-1] ** 2 + V[-1] ** 2)
+                            velsurf_mag = tf.where(thk==0,0,velsurf_mag)
+                            print("train : ", epoch, COST.numpy(), np.max(velsurf_mag))
 
-                    if (epoch + 1) % 100 == 0:
-                        U, V = Y_to_UV(params, Y)
-                        U = U[0]
-                        V = V[0]
-                        velsurf_mag = tf.sqrt(U[-1] ** 2 + V[-1] ** 2)
-                        print("train : ", epoch, COST.numpy(), np.max(velsurf_mag))
+                    grads = t.gradient(COST, state.iceflow_model.trainable_variables)
 
-                grads = t.gradient(COST, state.iceflow_model.trainable_variables)
+                    state.opti_retrain.apply_gradients(
+                        zip(grads, state.iceflow_model.trainable_variables)
+                    )
 
-                state.opti_retrain.apply_gradients(
-                    zip(grads, state.iceflow_model.trainable_variables)
-                )
+                    state.opti_retrain.lr = params.iflo_retrain_emulator_lr * (
+                        0.95 ** (epoch / 1000)
+                    )
 
-                state.opti_retrain.lr = params.iflo_retrain_emulator_lr * (
-                    0.95 ** (epoch / 1000)
-                )
+                state.COST_EMULATOR.append(cost_emulator)
+        else:
 
-            state.COST_EMULATOR.append(cost_emulator)
+            _update_iceflow_emulator_lbfgs(params, state, X, nbit)
             
     
     if len(params.save_cost_emulator)>0:
@@ -226,46 +221,124 @@ def update_iceflow_emulator(params, state):
 
 
 
-# def _update_iceflow_emulator_lbfgs(params, state):
+def _update_iceflow_emulator_lbfgs(params, state, X, nbit):
 
-#     import tensorflow_probability as tfp
+    import tensorflow_probability as tfp
 
-#     Cost_Glen = [0]
- 
-#     def COST(iceflow_model):
+    # based on guidance here: https://gist.github.com/piyueh/712ec7d4540489aad2dcfb80f9a54993
+    print ('beginning lbfgs, max iterations ' + str(nbit))
 
-#         fieldin = [vars(state)[f] for f in params.iflo_fieldin]
- 
-#         X = fieldin_to_X(params, fieldin) 
+    Ny = X.shape[1]
+    Nx = X.shape[2]
+    PAD = compute_PAD(params,Nx,Ny)
+    iz = params.iflo_exclude_borders
+    thk = state.thk
 
-#         Y = iceflow_model(X)
-        
-#         C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X, Y)
+    # according to what i've read, tfp.optimizer.lbfgs_minimize requires the controls to be a 1D tensor.
+    # below the trainable variables, which exist as a list of tensors of various shapes, need to be converted
+    # to and from a 1D tensor via dynamic_partition() and dynamic_stitch(), which uses idx and part.
 
-#         COST = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
-#              + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
-           
-#         return COST
+    shapes = tf.shape_n(state.iceflow_model.trainable_variables)
+    n_tensors = len(shapes)
 
-#     def loss_and_gradients_function(trainable_variables):
-#         with tf.GradientTape() as tape:
-#             tape.watch(trainable_variables)
-#             loss = COST(iceflow_model)
-#             gradients = tape.gradient(loss, trainable_variables)
-#         return loss, gradients
+    count = 0
+    idx = [] # stitch indices
+    part = [] # partition indices
+
+    for i, shape in enumerate(shapes):
+        n = np.product(shape)
+        idx.append(tf.reshape(tf.range(count, count+n, dtype=tf.int32), shape))
+        part.extend([i]*n)
+        count += n
+
+    part = tf.constant(part)
+
+    ######
+
+    @tf.function
+    def assign_new_model_parameters(model,params_1d):
+        """A function updating the model's parameters with a 1D tf.Tensor.
+        Args:
+            params_1d [in]: a 1D tf.Tensor representing the model's trainable parameters.
+        """
+
+        params = tf.dynamic_partition(params_1d, part, n_tensors)
+        for i, (shape, param) in enumerate(zip(shapes, params)):
+            model.trainable_variables[i].assign(tf.reshape(param, shape))
+
+    ######
+
+# this cannot have the tf.function decorator because energy_iceflow.iceflow_energy()
+# uses the symbol table. this can be avoided by fixing iflo_fieldin rather than 
+# having it as a settable parameter. (Or at least fixing it to several hardcoded choices)
+# same is true of the next function (below)
+
+#    @tf.function
+    def COST(oneD_tensor):
+
+        cost_emulator = tf.Variable(0.0)
     
-#     if (state.it < 0) | (state.it % params.iflo_retrain_emulator_freq == 0):
-  
-#         state.COST_EMULATOR = [0]
-  
-#         trainable_variables = tfp.optimizer.lbfgs_minimize(
-#                 value_and_gradients_function=loss_and_gradients_function,
-#                 initial_position=trainable_variables,
-#                 max_iterations=params.iflo_retrain_emulator_nbit,
-#                 tolerance=1e-8)
+        assign_new_model_parameters(state.iceflow_model,oneD_tensor)
 
-# #    if len(params.save_cost_emulator)>0:
-# #        np.savetxt(params.save_cost_emulator+'-'+str(state.it)+'.dat', np.array(state.COST_EMULATOR), fmt="%5.10f")
+        epoch = len(state.COST_EMULATOR)
+
+        for i in range(X.shape[0]):
+
+            Y = state.iceflow_model(tf.pad(X[i:i+1, :, :, :], PAD, "CONSTANT"))[:,:Ny,:Nx,:]
+    
+            if iz>0:
+                C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, iz:-iz, iz:-iz, :], Y[:, iz:-iz, iz:-iz, :])
+            else:
+                C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X[i : i + 1, :, :, :], Y[:, :, :, :])
+
+            COST = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
+                 + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
+
+            cost_emulator = cost_emulator + COST
+           
+        state.COST_EMULATOR.append(cost_emulator)
+
+        if (epoch + 1) % 100 == 0:
+            print ('epoch ' + str(epoch))
+            Csh = tf.reduce_mean(C_shear).numpy()
+            Cgr = tf.reduce_mean(C_grav).numpy()
+            Csl = tf.reduce_mean(C_slid).numpy()
+            Cfl = tf.reduce_mean(C_float).numpy()
+            print("---------- > ",Csh,Csl,Cgr,Cfl)
+
+        if (epoch + 1) % 100 == 0:
+            U, V = Y_to_UV(params, Y)
+            U = U[0]
+            V = V[0]
+            velsurf_mag = tf.sqrt(U[-1] ** 2 + V[-1] ** 2)
+            velsurf_mag = tf.where(thk==0,0,velsurf_mag)
+            print("train : ", epoch, COST.numpy(), np.max(velsurf_mag))
+
+        return cost_emulator
+
+    ######
+
+#    @tf.function
+    def loss_and_gradients_function(oneD_tensor):
+        with tf.GradientTape() as tape:
+            loss = COST(oneD_tensor)
+        gradients = tape.gradient(loss, state.iceflow_model.trainable_variables)
+        gradients = tf.dynamic_stitch(idx, gradients)
+        return loss, gradients
+
+    ######
+
+    # max_iterations << number of gradient evals.
+
+    init_params = tf.dynamic_stitch(idx, state.iceflow_model.trainable_variables)
+    results = tfp.optimizer.lbfgs_minimize(
+                value_and_gradients_function=loss_and_gradients_function,
+                initial_position=init_params,
+                max_iterations=nbit,
+                f_relative_tolerance=1e-3)
+
+    assign_new_model_parameters(state.iceflow_model,results.position)
+
 
 
 def _split_into_patches(X, nbmax):
