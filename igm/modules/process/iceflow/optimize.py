@@ -95,9 +95,10 @@ def optimize(params, state):
     shapes = []
     control_tensors = {}
     for f in params.opti_control:
-        vars()[f] = tf.Variable(vars(state)[f] / sc[f])
-        shapes.append(tf.shape(vars()[f]))
-        control_tensors[f] = vars()[f]
+        control_tensors[f] = tf.Variable(vars(state)[f] / sc[f])
+        shapes.append(tf.shape(control_tensors[f]))
+    
+    var_to_opti = [control_tensors[f] for f in params.opti_control]
 
     count = 0
     idx = [] # stitch indices
@@ -111,138 +112,34 @@ def optimize(params, state):
 
     part = tf.constant(part)
 
-    opti_iter = 0
+    opti_iter = [0]
 
-    def oneDtensor_to_controls(oneDtensor):
+    def value_and_gradients_function(control_tensors):
 
-        n_tensors = len(params.opti_control)
-        single_tensors = tf.dynamic_partition(oneDtensor, part, n_tensors)
-        control_tensors = {}
-        for i in range(len(shapes)):
-            control_tensors[params.opti_control[i]] = \
-                tf.reshape(single_tensors[i],shapes[i])
-        return control_tensors
-
-    def value_and_gradients_function(oneDtensor):
-
-        ctrls = oneDtensor_to_controls(oneDtensor)
-
-        for f in params.opti_control:
-            t.watch(ctrls[f])
-            vars(state)[f] = ctrls[f] * sc[f]
-
-        fieldin = [vars(state)[f] for f in params.iflo_fieldin]
-
-        X = fieldin_to_X(params, fieldin)
-
-        # evalutae th ice flow emulator                
-        if params.iflo_multiple_window_size==0:
-            Y = state.iceflow_model(X)
-        else:
-            Y = state.iceflow_model(tf.pad(X, state.PAD, "CONSTANT"))[:, :Ny, :Nx, :]
-
-        U, V = Y_to_UV(params, Y)
-
-        U = U[0]
-        V = V[0]
-
-        # this is strange, but it having state.U instead of U, slidingco is not more optimized ....
-        state.uvelbase = U[0, :, :]
-        state.vvelbase = V[0, :, :]
-        state.ubar = tf.reduce_sum(U * state.vert_weight, axis=0)
-        state.vbar = tf.reduce_sum(V * state.vert_weight, axis=0)
-        state.uvelsurf = U[-1, :, :]
-        state.vvelsurf = V[-1, :, :]
-
-        if not params.opti_smooth_anisotropy_factor == 1:
-            _compute_flow_direction_for_anisotropic_smoothing(state)
-
-        cost = {}
-
-        # misfit between surface velocity
-        if "velsurf" in params.opti_cost:
-            cost["velsurf"] = misfit_velsurf(params,state)
-
-        # misfit between ice thickness profiles
-        if "thk" in params.opti_cost:
-            cost["thk"] = misfit_thk(params, state)
-
-        # misfit between divergence of flux
-        if ("divfluxfcz" in params.opti_cost):
-            cost["divflux"] = cost_divfluxfcz(params, state, i)
-        elif ("divfluxobs" in params.opti_cost):
-            cost["divflux"] = cost_divfluxobs(params, state, i)
-
-	# misfit between top ice surfaces
-        if "usurf" in params.opti_cost:
-            cost["usurf"] = misfit_usurf(params, state) 
-
-	# force zero thikness outisde the mask
-        if "icemask" in params.opti_cost:
-            cost["icemask"] = 10**10 * tf.math.reduce_mean( tf.where(state.icemaskobs > 0.5, 0.0, state.thk**2) )
-
-	# Here one enforces non-negative ice thickness, and possibly zero-thickness in user-defined ice-free areas.
-        if "thk" in params.opti_control:
-            cost["thk_positive"] = 10**10 * tf.math.reduce_mean( tf.where(state.thk >= 0, 0.0, state.thk**2) )
-	    
-        if params.opti_infer_params:
-            cost["volume"] = cost_vol(params, state)
-
-	# Here one adds a regularization terms for the bed toporgraphy to the cost function
-        if "thk" in params.opti_control:
-            cost["thk_regu"] = regu_thk(params, state)
-
-	# Here one adds a regularization terms for slidingco to the cost function
-        if "slidingco" in params.opti_control:
-            cost["slid_regu"] = regu_slidingco(params, state)
-
-	# Here one adds a regularization terms for arrhenius to the cost function
-        if "arrhenius" in params.opti_control:
-            cost["arrh_regu"] = regu_arrhenius(params, state) 
-
-        cost_total = tf.reduce_sum(tf.convert_to_tensor(list(cost.values())))
-
-        var_to_opti = []
-        for f in params.opti_control:
-            var_to_opti.append(vars()[f])
-
-        gradients = t.gradient(cost_total, var_to_opti)
-        gradients = tf.dynamic_stitch(idx, gradients)
-
-        print_costs(params, state, cost, opti_iter)
-
-        return cost_total, gradients
-
-    # main loop
-    for i in range(params.opti_nbitmax):
+        print ('Gradient Calculation ' + str(opti_iter[0]))
         with tf.GradientTape() as t, tf.GradientTape() as s:
-            state.tcomp_optimize.append(time.time())
-            
-            if params.opti_step_size_decay < 1:
-                optimizer.lr = params.opti_step_size * (params.opti_step_size_decay ** (i / 100))
-
-            # is necessary to remember all operation to derive the gradients w.r.t. control variables
-            for f in params.opti_control:
-                t.watch(vars()[f])
+            s.reset()
+            t.reset()
 
             for f in params.opti_control:
-                vars(state)[f] = vars()[f] * sc[f]
-
+                t.watch(control_tensors[f])
+                vars(state)[f] = control_tensors[f] * sc[f]
+    
             fieldin = [vars(state)[f] for f in params.iflo_fieldin]
-
+    
             X = fieldin_to_X(params, fieldin)
-
+    
             # evalutae th ice flow emulator                
             if params.iflo_multiple_window_size==0:
                 Y = state.iceflow_model(X)
             else:
                 Y = state.iceflow_model(tf.pad(X, state.PAD, "CONSTANT"))[:, :Ny, :Nx, :]
-
+    
             U, V = Y_to_UV(params, Y)
-
+    
             U = U[0]
             V = V[0]
-           
+    
             # this is strange, but it having state.U instead of U, slidingco is not more optimized ....
             state.uvelbase = U[0, :, :]
             state.vvelbase = V[0, :, :]
@@ -250,55 +147,73 @@ def optimize(params, state):
             state.vbar = tf.reduce_sum(V * state.vert_weight, axis=0)
             state.uvelsurf = U[-1, :, :]
             state.vvelsurf = V[-1, :, :]
- 
+    
             if not params.opti_smooth_anisotropy_factor == 1:
                 _compute_flow_direction_for_anisotropic_smoothing(state)
-
-            cost = {} 
-                 
+    
+            cost = {}
+    
             # misfit between surface velocity
             if "velsurf" in params.opti_cost:
                 cost["velsurf"] = misfit_velsurf(params,state)
-
+    
             # misfit between ice thickness profiles
             if "thk" in params.opti_cost:
                 cost["thk"] = misfit_thk(params, state)
-
+    
             # misfit between divergence of flux
             if ("divfluxfcz" in params.opti_cost):
                 cost["divflux"] = cost_divfluxfcz(params, state, i)
             elif ("divfluxobs" in params.opti_cost):
                 cost["divflux"] = cost_divfluxobs(params, state, i)
- 
-            # misfit between top ice surfaces
+    
+    	    # misfit between top ice surfaces
             if "usurf" in params.opti_cost:
                 cost["usurf"] = misfit_usurf(params, state) 
-
-            # force zero thikness outisde the mask
+    
+    	    # force zero thikness outisde the mask
             if "icemask" in params.opti_cost:
                 cost["icemask"] = 10**10 * tf.math.reduce_mean( tf.where(state.icemaskobs > 0.5, 0.0, state.thk**2) )
-
-            # Here one enforces non-negative ice thickness, and possibly zero-thickness in user-defined ice-free areas.
+    
+    	    # Here one enforces non-negative ice thickness, and possibly zero-thickness in user-defined ice-free areas.
             if "thk" in params.opti_control:
                 cost["thk_positive"] = 10**10 * tf.math.reduce_mean( tf.where(state.thk >= 0, 0.0, state.thk**2) )
-                
+    	    
             if params.opti_infer_params:
                 cost["volume"] = cost_vol(params, state)
     
             # Here one adds a regularization terms for the bed toporgraphy to the cost function
             if "thk" in params.opti_control:
                 cost["thk_regu"] = regu_thk(params, state)
-
-            # Here one adds a regularization terms for slidingco to the cost function
+    
+    	    # Here one adds a regularization terms for slidingco to the cost function
             if "slidingco" in params.opti_control:
                 cost["slid_regu"] = regu_slidingco(params, state)
-
-            # Here one adds a regularization terms for arrhenius to the cost function
+    
+    	    # Here one adds a regularization terms for arrhenius to the cost function
             if "arrhenius" in params.opti_control:
                 cost["arrh_regu"] = regu_arrhenius(params, state) 
-  
+   
             cost_total = tf.reduce_sum(tf.convert_to_tensor(list(cost.values())))
+            print_costs(params, state, cost, opti_iter[0])
+    
+    
+            gradients = tf.Variable(t.gradient(cost_total, var_to_opti))
 
+            # set to zero gradients outside of icemask
+
+            if params.sole_mask:
+                for ii in range(gradients.shape[0]):
+                    if not "slidingco" == params.opti_control[ii]:
+                        gradients[ii].assign(tf.where((state.icemaskobs > 0.5), gradients[ii], 0))
+                    else:
+                        gradients[ii].assign(tf.where((state.icemaskobs == 1), gradients[ii], 0))
+            else:
+                for ii in range(gradients.shape[0]):
+                    if not "slidingco" == params.opti_control[ii]:
+                        gradients[ii].assign(tf.where((state.icemaskobs > 0.5), gradients[ii], 0))
+
+            #################
             # Here one allow retraining of the ice flow emaultor
             if params.opti_retrain_iceflow_model:
                 C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X, Y)
@@ -311,67 +226,93 @@ def optimize(params, state):
                 opti_retrain.apply_gradients(
                     zip(grads, state.iceflow_model.trainable_variables)
                 )
-
-            print_costs(params, state, cost, i)
-
             #################
 
-            var_to_opti = [ ]
-            for f in params.opti_control:
-                var_to_opti.append(vars()[f])
-
-            # Compute gradient of COST w.r.t. X
-            grads = tf.Variable(t.gradient(cost_total, var_to_opti))
-
-            # this serve to restict the optimization of controls to the mask
-            if params.sole_mask:
-                for ii in range(grads.shape[0]):
-                    if not "slidingco" == params.opti_control[ii]:
-                        grads[ii].assign(tf.where((state.icemaskobs > 0.5), grads[ii], 0))
-                    else:
-                        grads[ii].assign(tf.where((state.icemaskobs == 1), grads[ii], 0))
-            else:
-                for ii in range(grads.shape[0]):
-                    if not "slidingco" == params.opti_control[ii]:
-                        grads[ii].assign(tf.where((state.icemaskobs > 0.5), grads[ii], 0))
-
-            # One step of descent -> this will update input variable X
-            optimizer.apply_gradients(
-                zip([grads[i] for i in range(grads.shape[0])], var_to_opti)
-            )
-
-            ###################
-
-            # get back optimized variables in the pool of state.variables
             if "thk" in params.opti_control:
                 state.thk = tf.where(state.icemaskobs > 0.5, state.thk, 0)
-#                state.thk = tf.where(state.thk < 0.01, 0, state.thk)
 
             state.divflux = compute_divflux(
                 state.ubar, state.vbar, state.thk, state.dx, state.dx, method=params.opti_divflux_method
             )
 
-            #state.divflux = tf.where(ACT, state.divflux, 0.0)
-
-            _compute_rms_std_optimization(state, i)
+            _compute_rms_std_optimization(state, opti_iter[0])
 
             state.tcomp_optimize[-1] -= time.time()
             state.tcomp_optimize[-1] *= -1
 
             if i % params.opti_output_freq == 0:
                 if params.opti_plot2d:
-                    update_plot_inversion(params, state, i)
+                    update_plot_inversion(params, state, opti_iter[0])
                 if params.opti_save_iterat_in_ncdf:
-                    update_ncdf_optimize(params, state, i)
+                    update_ncdf_optimize(params, state, opti_iter[0])
 
-            # stopping criterion: stop if the cost no longer decrease
-            # if i>params.opti_nbitmin:
-            #     cost = [c[0] for c in costs]
-            #     if np.mean(cost[-10:])>np.mean(cost[-20:-10]):
-            #         break;
+        temp_iter = opti_iter[0]
+        opti_iter[0] = temp_iter + 1
+
+        return cost_total, gradients
+
+    def oneDtensor_to_controls(oneDtensor):
+
+        n_tensors = len(params.opti_control)
+        single_tensors = tf.dynamic_partition(oneDtensor, part, n_tensors)
+        control_tensors = {}
+        for i in range(len(shapes)):
+            control_tensors[params.opti_control[i]] = \
+                tf.reshape(single_tensors[i],shapes[i])
+        return control_tensors
+
+    def value_and_gradients_function_lbfgs(oneDtensor):
+
+        ctrls = oneDtensor_to_controls(oneDtensor)
+
+        for f in params.opti_control:
+            vars()[f] = ctrls[f]
+
+        cost_total, gradients = value_and_gradients_function()
+
+        gradients = tf.dynamic_stitch(idx, gradients)
+
+        return cost_total, gradients
+
+    if (True):
+    # main loop
+        for i in range(params.opti_nbitmax):
+            state.tcomp_optimize.append(time.time())
+            
+            if params.opti_step_size_decay < 1:
+                optimizer.lr = params.opti_step_size * (params.opti_step_size_decay ** (i / 100))
+
+            cost_total, gradients = value_and_gradients_function(control_tensors)
+
+            # One step of descent -> this will update input variable X
+            optimizer.apply_gradients(
+                zip([gradients[i] for i in range(gradients.shape[0])], var_to_opti)
+            )
+            embed()
+    else:
+        import tensorflow_probability as tfp
+
+        init_params = tf.dynamic_stitch(idx, var_to_opti)
+
+        results = tfp.optimizer.lbfgs_minimize(
+            value_and_gradients_function=value_and_gradients_function,
+            initial_position=init_params,
+            max_iterations=nbit,
+            f_relative_tolerance=1e-1)
+
+        control_tensors = oneDtensor_to_controls(results.position)
+
+                ###################
+
+
+            	# stopping criterion: stop if the cost no longer decrease
+            	# if i>params.opti_nbitmin:
+            	#     cost = [c[0] for c in costs]
+            	#     if np.mean(cost[-10:])>np.mean(cost[-20:-10]):
+            	#         break;
 
     for f in params.opti_control:
-        vars(state)[f] = vars()[f] * sc[f]
+        vars(state)[f] = control_tensors[f] * sc[f]
 
     # now that the ice thickness is optimized, we can fix the bed once for all! (ONLY FOR GROUNDED ICE)
     state.topg = state.usurf - state.thk
