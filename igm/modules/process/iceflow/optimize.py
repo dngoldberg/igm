@@ -288,7 +288,6 @@ def optimize(params, state):
             optimizer.apply_gradients(
                 zip([gradients[i] for i in range(gradients.shape[0])], var_to_opti)
             )
-            embed()
     else:
         import tensorflow_probability as tfp
 
