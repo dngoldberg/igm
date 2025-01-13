@@ -116,7 +116,6 @@ def optimize(params, state):
 
     def value_and_gradients_function(ctrl_tensors):
 
-        print ('Gradient Calculation ' + str(opti_iter[0]))
         state.tcomp_optimize.append(time.time())
 
         var_to_grad = [ctrl_tensors[f] for f in params.opti_control]
@@ -206,6 +205,8 @@ def optimize(params, state):
         gradients = tf.Variable(t.gradient(cost_total, var_to_grad))
         del t
 
+        # Here one allow retraining of the ice flow emaultor
+        #if params.opti_retrain_iceflow_model:
         if params.opti_retrain_iceflow_model:
 
             grads = s.gradient(cost['glen'], state.iceflow_model.trainable_variables)
@@ -227,26 +228,6 @@ def optimize(params, state):
                 if not "slidingco" == params.opti_control[ii]:
                     gradients[ii].assign(tf.where((state.icemaskobs > 0.5), gradients[ii], 0))
 
-        #################
-        # Here one allow retraining of the ice flow emaultor
-        #if params.opti_retrain_iceflow_model:
-        #    with tf.GradientTape() as s:
-#
-#                for q in state.iceflow_model.trainable_variables:
-#                    s.watch(q)
-#
-#                C_shear, C_slid, C_grav, C_float = iceflow_energy_XY(params, X, Y)
-#
-#                cost_glen = tf.reduce_mean(C_shear) + tf.reduce_mean(C_slid) \
-#                             + tf.reduce_mean(C_grav)  + tf.reduce_mean(C_float)
-#
-#            embed()                
-#            grads = s.gradient(cost_glen, state.iceflow_model.trainable_variables)
-#
-#            opti_retrain.apply_gradients(
-#                zip(grads, state.iceflow_model.trainable_variables)
-#            )
-        #################
 
         if "thk" in params.opti_control:
             state.thk = tf.where(state.icemaskobs > 0.5, state.thk, 0)
@@ -291,7 +272,10 @@ def optimize(params, state):
 
         return cost_total, gradients
 
-    if (False):
+
+    ########### END OF NESTED FUNCTIONS ###############
+
+    if (True):
     # main loop
         for i in range(params.opti_nbitmax):
             
@@ -300,10 +284,24 @@ def optimize(params, state):
 
             cost_total, gradients = value_and_gradients_function(control_tensors)
 
+            n_tensors = len(params.opti_control)
+            gradients = tf.dynamic_stitch(idx, gradients)
+            single_tensors = tf.dynamic_partition(gradients, part, n_tensors)
+            gradients = {}
+            for i in range(len(shapes)):
+                gradients[params.opti_control[i]] = \
+                    tf.reshape(single_tensors[i],shapes[i])
+            gradients = tf.Variable([gradients[f] for f in params.opti_control])
+
             # One step of descent -> this will update input variable X
             optimizer.apply_gradients(
                 zip([gradients[i] for i in range(gradients.shape[0])], var_to_opti)
             )
+            # stopping criterion: stop if the cost no longer decrease
+            #if i>params.opti_nbitmin:
+            #    cost = [c[0] for c in costs]
+            #    if np.mean(cost[-10:])>np.mean(cost[-20:-10]):
+            #        break;
     else:
         import tensorflow_probability as tfp
 
@@ -313,18 +311,13 @@ def optimize(params, state):
             value_and_gradients_function=value_and_gradients_function_lbfgs,
             initial_position=init_params,
             max_iterations=params.opti_nbitmax,
-            f_relative_tolerance=1e-1)
+            f_relative_tolerance=3e-1)
 
         control_tensors = oneDtensor_to_controls(results.position)
 
                 ###################
 
 
-            	# stopping criterion: stop if the cost no longer decrease
-            	# if i>params.opti_nbitmin:
-            	#     cost = [c[0] for c in costs]
-            	#     if np.mean(cost[-10:])>np.mean(cost[-20:-10]):
-            	#         break;
 
     for f in params.opti_control:
         vars(state)[f] = control_tensors[f] * sc[f]
